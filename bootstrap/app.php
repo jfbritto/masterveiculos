@@ -11,6 +11,9 @@ return Application::configure(basePath: dirname(__DIR__))
         commands: __DIR__.'/../routes/console.php',
         health: '/up',
     )
+    ->withSchedule(function (\Illuminate\Console\Scheduling\Schedule $schedule): void {
+        $schedule->command('billing:check-overdue')->dailyAt('08:00');
+    })
     ->withMiddleware(function (Middleware $middleware): void {
         //
     })

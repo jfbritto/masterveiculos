@@ -10,10 +10,6 @@ use Illuminate\Support\Facades\Log;
 
 class AsaasWebhookController extends Controller
 {
-    // Dias de atraso para cada ação
-    private const SOFT_BLOCK_DAYS = 5;
-    private const HARD_BLOCK_DAYS = 15;
-
     public function __construct(
         private TenantApiService $apiService
     ) {}
@@ -102,20 +98,6 @@ class AsaasWebhookController extends Controller
         $payment = Payment::where('asaas_payment_id', $data['id'])->first();
         if ($payment) {
             $this->pushPaymentRecordToTenant($tenant, $payment);
-        }
-
-        // Calcular dias de atraso
-        $dueDate = \Carbon\Carbon::parse($data['dueDate']);
-        $daysOverdue = $dueDate->diffInDays(now());
-
-        if ($daysOverdue >= self::HARD_BLOCK_DAYS && $tenant->status !== 'blocked') {
-            $this->apiService->suspend($tenant);
-            $tenant->update(['status' => 'blocked']);
-            Log::warning("Tenant {$tenant->name} BLOQUEADO - {$daysOverdue} dias de atraso.");
-        } elseif ($daysOverdue >= self::SOFT_BLOCK_DAYS && $tenant->status === 'active') {
-            $this->apiService->suspend($tenant);
-            $tenant->update(['status' => 'suspended']);
-            Log::warning("Tenant {$tenant->name} SUSPENSO - {$daysOverdue} dias de atraso.");
         }
     }
 
