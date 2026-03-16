@@ -17,7 +17,7 @@
                             @csrf
                             <button type="button" class="btn btn-sm btn-outline-warning" onclick="confirmAction('form-suspend', 'Suspender Tenant', 'O site ficará em modo manutenção para os visitantes.', 'Sim, suspender')"><i class="bi bi-pause-circle"></i> Suspender</button>
                         </form>
-                    @elseif($tenant->isSuspended())
+                    @elseif($tenant->isSuspended() || $tenant->status === 'inactive')
                         <form action="{{ route('tenants.reactivate', $tenant) }}" method="POST">
                             @csrf
                             <button class="btn btn-sm btn-outline-success"><i class="bi bi-play-circle"></i> Reativar</button>
