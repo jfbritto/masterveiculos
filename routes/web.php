@@ -22,6 +22,7 @@ Route::middleware('auth')->group(function () {
     Route::post('tenants/{tenant}/regenerate-token', [TenantController::class, 'regenerateToken'])->name('tenants.regenerate-token');
     Route::post('tenants/{tenant}/activate-billing', [TenantController::class, 'activateBilling'])->name('tenants.activate-billing');
     Route::post('tenants/{tenant}/cancel-billing', [TenantController::class, 'cancelBilling'])->name('tenants.cancel-billing');
+    Route::post('tenants/{tenant}/deactivate', [TenantController::class, 'deactivate'])->name('tenants.deactivate');
 
     Route::resource('payments', PaymentController::class)->only(['index', 'create', 'store']);
     Route::post('payments/{payment}/mark-paid', [PaymentController::class, 'markPaid'])->name('payments.mark-paid');

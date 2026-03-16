@@ -121,6 +121,22 @@
             </div>
         </div>
     </div>
+
+        @if($tenant->status !== 'inactive')
+        <div class="card border-danger">
+            <div class="card-header bg-danger bg-opacity-10"><h6 class="mb-0 text-danger">Zona de Perigo</h6></div>
+            <div class="card-body">
+                <p class="small text-muted mb-2">Desativar o tenant cancela a cobrança no Asaas, suspende o site e marca como inativo.</p>
+                <form id="form-deactivate" action="{{ route('tenants.deactivate', $tenant) }}" method="POST">
+                    @csrf
+                    <button type="button" class="btn btn-sm btn-danger" onclick="confirmAction('form-deactivate', 'Desativar Tenant', 'Isso irá cancelar a cobrança, suspender o site e desativar o tenant por completo. Esta ação pode ser revertida reativando manualmente.', 'Sim, desativar')">
+                        <i class="bi bi-power"></i> Desativar Tenant
+                    </button>
+                </form>
+            </div>
+        </div>
+        @endif
+    </div>
 </div>
 
 <div class="card">

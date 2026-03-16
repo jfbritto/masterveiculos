@@ -173,6 +173,33 @@ class TenantController extends Controller
         return back()->with('success', 'Cobrança cancelada.');
     }
 
+    public function deactivate(Tenant $tenant)
+    {
+        // 1. Cancelar assinatura no Asaas (se existir)
+        if ($tenant->asaas_subscription_id) {
+            $this->asaasService->cancelSubscription($tenant->asaas_subscription_id);
+            $tenant->update(['asaas_subscription_id' => null]);
+        }
+
+        // 2. Suspender o site do cliente
+        $this->apiService->suspend($tenant);
+
+        // 3. Limpar dados de billing no Soavel
+        $this->apiService->updateBilling($tenant, [
+            'billing_status' => 'inactive',
+            'billing_amount' => null,
+            'billing_due_date' => null,
+            'billing_invoice_url' => null,
+            'billing_type' => null,
+            'billing_subscription_status' => 'inactive',
+        ]);
+
+        // 4. Marcar tenant como inativo
+        $tenant->update(['status' => 'inactive']);
+
+        return back()->with('success', 'Tenant desativado por completo. Cobrança cancelada e site suspenso.');
+    }
+
     public function regenerateToken(Tenant $tenant)
     {
         $tenant->update(['api_token' => Str::random(64)]);
