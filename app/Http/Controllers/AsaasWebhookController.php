@@ -46,7 +46,7 @@ class AsaasWebhookController extends Controller
         $tenant = $this->findTenantBySubscription($data);
         if (!$tenant) return;
 
-        Payment::updateOrCreate(
+        $payment = Payment::updateOrCreate(
             ['asaas_payment_id' => $data['id']],
             [
                 'tenant_id' => $tenant->id,
@@ -59,6 +59,7 @@ class AsaasWebhookController extends Controller
         );
 
         $this->pushBillingToTenant($tenant);
+        $this->pushPaymentRecordToTenant($tenant, $payment);
     }
 
     private function onPaymentConfirmed(array $data, string $event): void
@@ -74,6 +75,10 @@ class AsaasWebhookController extends Controller
 
         if ($tenant) {
             $this->pushBillingToTenant($tenant);
+            $payment = Payment::where('asaas_payment_id', $data['id'])->first();
+            if ($payment) {
+                $this->pushPaymentRecordToTenant($tenant, $payment);
+            }
         }
 
         // Se o tenant estava suspenso por inadimplência, reativar
@@ -94,6 +99,10 @@ class AsaasWebhookController extends Controller
         ]);
 
         $this->pushBillingToTenant($tenant);
+        $payment = Payment::where('asaas_payment_id', $data['id'])->first();
+        if ($payment) {
+            $this->pushPaymentRecordToTenant($tenant, $payment);
+        }
 
         // Calcular dias de atraso
         $dueDate = \Carbon\Carbon::parse($data['dueDate']);
@@ -115,6 +124,14 @@ class AsaasWebhookController extends Controller
         Payment::where('asaas_payment_id', $data['id'])->update([
             'status' => 'refunded',
         ]);
+
+        $payment = Payment::where('asaas_payment_id', $data['id'])->first();
+        if ($payment) {
+            $tenant = Tenant::find($payment->tenant_id);
+            if ($tenant) {
+                $this->pushPaymentRecordToTenant($tenant, $payment);
+            }
+        }
     }
 
     private function pushBillingToTenant(Tenant $tenant): void
@@ -161,6 +178,27 @@ class AsaasWebhookController extends Controller
             }
         } catch (\Exception $e) {
             Log::warning("Failed to push billing to tenant {$tenant->name}: {$e->getMessage()}");
+        }
+    }
+
+    private function pushPaymentRecordToTenant(Tenant $tenant, Payment $payment): void
+    {
+        try {
+            $result = $this->apiService->updateBillingHistory($tenant, [
+                'asaas_payment_id' => $payment->asaas_payment_id,
+                'amount' => $payment->amount,
+                'status' => $payment->status,
+                'due_date' => $payment->due_date instanceof \Carbon\Carbon ? $payment->due_date->toDateString() : $payment->due_date,
+                'paid_at' => $payment->paid_at ? ($payment->paid_at instanceof \Carbon\Carbon ? $payment->paid_at->toDateString() : $payment->paid_at) : null,
+                'billing_type' => $payment->billing_type,
+                'invoice_url' => $payment->invoice_url,
+            ]);
+
+            if (!$result['success']) {
+                Log::warning("Push payment record to tenant {$tenant->name} failed", $result);
+            }
+        } catch (\Exception $e) {
+            Log::warning("Failed to push payment record to tenant {$tenant->name}: {$e->getMessage()}");
         }
     }
 
