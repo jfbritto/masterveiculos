@@ -19,17 +19,17 @@ class TenantApiService
 
     public function suspend(Tenant $tenant): array
     {
-        return $this->request($tenant, 'POST', '/api/master/suspend');
+        return $this->request($tenant, 'GET', '/api/master/suspend');
     }
 
     public function reactivate(Tenant $tenant): array
     {
-        return $this->request($tenant, 'POST', '/api/master/reactivate');
+        return $this->request($tenant, 'GET', '/api/master/reactivate');
     }
 
     public function updateConfig(Tenant $tenant, array $config): array
     {
-        return $this->request($tenant, 'POST', '/api/master/config', $config);
+        return $this->request($tenant, 'GET', '/api/master/config', $config);
     }
 
     private function request(Tenant $tenant, string $method, string $endpoint, array $data = []): array
