@@ -160,6 +160,16 @@ class TenantController extends Controller
         $this->asaasService->cancelSubscription($tenant->asaas_subscription_id);
         $tenant->update(['asaas_subscription_id' => null]);
 
+        // Limpa dados de billing no tenant
+        $this->apiService->updateBilling($tenant, [
+            'billing_status' => 'inactive',
+            'billing_amount' => null,
+            'billing_due_date' => null,
+            'billing_invoice_url' => null,
+            'billing_type' => null,
+            'billing_subscription_status' => 'inactive',
+        ]);
+
         return back()->with('success', 'Cobrança cancelada.');
     }
 
