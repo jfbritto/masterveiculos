@@ -34,6 +34,8 @@ class TenantApiService
 
     public function updateBilling(Tenant $tenant, array $data): array
     {
+        // Converter null para string vazia para que chegue via GET query string
+        $data = array_map(fn($v) => $v ?? '', $data);
         return $this->request($tenant, 'GET', '/api/master/billing', $data);
     }
 
