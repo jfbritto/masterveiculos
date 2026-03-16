@@ -127,7 +127,7 @@ class AsaasWebhookController extends Controller
                 ->first();
 
             if ($nextPayment) {
-                $this->apiService->updateBilling($tenant, [
+                $result = $this->apiService->updateBilling($tenant, [
                     'billing_status' => $nextPayment->status,
                     'billing_amount' => $nextPayment->amount,
                     'billing_due_date' => $nextPayment->due_date,
@@ -143,7 +143,7 @@ class AsaasWebhookController extends Controller
                     ->first();
 
                 if ($lastPaid) {
-                    $this->apiService->updateBilling($tenant, [
+                    $result = $this->apiService->updateBilling($tenant, [
                         'billing_status' => $lastPaid->status,
                         'billing_amount' => $lastPaid->amount,
                         'billing_due_date' => $lastPaid->due_date,
@@ -152,6 +152,12 @@ class AsaasWebhookController extends Controller
                         'billing_subscription_status' => 'active',
                     ]);
                 }
+            }
+
+            if (isset($result) && !$result['success']) {
+                Log::warning("Push billing to tenant {$tenant->name} failed", $result);
+            } elseif (isset($result)) {
+                Log::info("Push billing to tenant {$tenant->name} succeeded");
             }
         } catch (\Exception $e) {
             Log::warning("Failed to push billing to tenant {$tenant->name}: {$e->getMessage()}");
