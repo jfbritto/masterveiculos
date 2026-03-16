@@ -58,7 +58,7 @@ class AsaasWebhookController extends Controller
             ]
         );
 
-        $this->pushBillingToTenant($tenant, 'pending', $data);
+        $this->pushBillingToTenant($tenant);
     }
 
     private function onPaymentConfirmed(array $data, string $event): void
@@ -73,7 +73,7 @@ class AsaasWebhookController extends Controller
         ]);
 
         if ($tenant) {
-            $this->pushBillingToTenant($tenant, $status, $data);
+            $this->pushBillingToTenant($tenant);
         }
 
         // Se o tenant estava suspenso por inadimplência, reativar
@@ -93,7 +93,7 @@ class AsaasWebhookController extends Controller
             'status' => 'overdue',
         ]);
 
-        $this->pushBillingToTenant($tenant, 'overdue', $data);
+        $this->pushBillingToTenant($tenant);
 
         // Calcular dias de atraso
         $dueDate = \Carbon\Carbon::parse($data['dueDate']);
@@ -117,17 +117,42 @@ class AsaasWebhookController extends Controller
         ]);
     }
 
-    private function pushBillingToTenant(Tenant $tenant, string $status, array $data): void
+    private function pushBillingToTenant(Tenant $tenant): void
     {
         try {
-            $this->apiService->updateBilling($tenant, [
-                'billing_status' => $status,
-                'billing_amount' => $data['value'] ?? $tenant->monthly_amount,
-                'billing_due_date' => $data['dueDate'] ?? null,
-                'billing_invoice_url' => $data['invoiceUrl'] ?? null,
-                'billing_type' => $data['billingType'] ?? null,
-                'billing_subscription_status' => 'active',
-            ]);
+            // Busca a fatura pendente mais próxima do tenant
+            $nextPayment = Payment::where('tenant_id', $tenant->id)
+                ->whereIn('status', ['pending', 'overdue'])
+                ->orderBy('due_date', 'asc')
+                ->first();
+
+            if ($nextPayment) {
+                $this->apiService->updateBilling($tenant, [
+                    'billing_status' => $nextPayment->status,
+                    'billing_amount' => $nextPayment->amount,
+                    'billing_due_date' => $nextPayment->due_date,
+                    'billing_invoice_url' => $nextPayment->invoice_url,
+                    'billing_type' => $nextPayment->billing_type,
+                    'billing_subscription_status' => 'active',
+                ]);
+            } else {
+                // Todas as faturas pagas — busca a última paga para mostrar status
+                $lastPaid = Payment::where('tenant_id', $tenant->id)
+                    ->whereIn('status', ['confirmed', 'received'])
+                    ->orderBy('due_date', 'desc')
+                    ->first();
+
+                if ($lastPaid) {
+                    $this->apiService->updateBilling($tenant, [
+                        'billing_status' => $lastPaid->status,
+                        'billing_amount' => $lastPaid->amount,
+                        'billing_due_date' => $lastPaid->due_date,
+                        'billing_invoice_url' => null,
+                        'billing_type' => $lastPaid->billing_type,
+                        'billing_subscription_status' => 'active',
+                    ]);
+                }
+            }
         } catch (\Exception $e) {
             Log::warning("Failed to push billing to tenant {$tenant->name}: {$e->getMessage()}");
         }
