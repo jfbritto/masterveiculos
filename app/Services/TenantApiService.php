@@ -32,6 +32,11 @@ class TenantApiService
         return $this->request($tenant, 'GET', '/api/master/config', $config);
     }
 
+    public function updateBilling(Tenant $tenant, array $data): array
+    {
+        return $this->request($tenant, 'GET', '/api/master/billing', $data);
+    }
+
     private function request(Tenant $tenant, string $method, string $endpoint, array $data = []): array
     {
         $url = rtrim($tenant->domain, '/') . $endpoint;

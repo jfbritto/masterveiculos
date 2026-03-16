@@ -57,6 +57,8 @@ class AsaasWebhookController extends Controller
                 'invoice_url' => $data['invoiceUrl'] ?? null,
             ]
         );
+
+        $this->pushBillingToTenant($tenant, 'pending', $data);
     }
 
     private function onPaymentConfirmed(array $data, string $event): void
@@ -69,6 +71,10 @@ class AsaasWebhookController extends Controller
             'status' => $status,
             'paid_at' => $data['paymentDate'] ?? $data['confirmedDate'] ?? now()->toDateString(),
         ]);
+
+        if ($tenant) {
+            $this->pushBillingToTenant($tenant, $status, $data);
+        }
 
         // Se o tenant estava suspenso por inadimplência, reativar
         if ($tenant && $tenant->isSuspended()) {
@@ -86,6 +92,8 @@ class AsaasWebhookController extends Controller
         Payment::where('asaas_payment_id', $data['id'])->update([
             'status' => 'overdue',
         ]);
+
+        $this->pushBillingToTenant($tenant, 'overdue', $data);
 
         // Calcular dias de atraso
         $dueDate = \Carbon\Carbon::parse($data['dueDate']);
@@ -107,6 +115,22 @@ class AsaasWebhookController extends Controller
         Payment::where('asaas_payment_id', $data['id'])->update([
             'status' => 'refunded',
         ]);
+    }
+
+    private function pushBillingToTenant(Tenant $tenant, string $status, array $data): void
+    {
+        try {
+            $this->apiService->updateBilling($tenant, [
+                'billing_status' => $status,
+                'billing_amount' => $data['value'] ?? $tenant->monthly_amount,
+                'billing_due_date' => $data['dueDate'] ?? null,
+                'billing_invoice_url' => $data['invoiceUrl'] ?? null,
+                'billing_type' => $data['billingType'] ?? null,
+                'billing_subscription_status' => 'active',
+            ]);
+        } catch (\Exception $e) {
+            Log::warning("Failed to push billing to tenant {$tenant->name}: {$e->getMessage()}");
+        }
     }
 
     private function findTenantBySubscription(array $data): ?Tenant

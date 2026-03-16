@@ -137,6 +137,14 @@ class TenantController extends Controller
         $result = $this->asaasService->createCustomerAndSubscription($tenant, $request->first_due_date);
 
         if ($tenant->fresh()->asaas_subscription_id) {
+            // Envia dados de billing para o tenant
+            $this->apiService->updateBilling($tenant, [
+                'billing_status' => 'pending',
+                'billing_amount' => $tenant->monthly_amount,
+                'billing_due_date' => $request->first_due_date,
+                'billing_subscription_status' => 'active',
+            ]);
+
             return back()->with('success', 'Cobrança ativada! Primeiro vencimento: ' . \Carbon\Carbon::parse($request->first_due_date)->format('d/m/Y'));
         }
 
