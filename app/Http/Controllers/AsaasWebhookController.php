@@ -27,6 +27,7 @@ class AsaasWebhookController extends Controller
 
         match ($event) {
             'PAYMENT_CREATED' => $this->onPaymentCreated($payment),
+            'PAYMENT_UPDATED' => $this->onPaymentUpdated($payment),
             'PAYMENT_CONFIRMED', 'PAYMENT_RECEIVED' => $this->onPaymentConfirmed($payment, $event),
             'PAYMENT_OVERDUE' => $this->onPaymentOverdue($payment),
             'PAYMENT_REFUNDED' => $this->onPaymentRefunded($payment),
@@ -56,6 +57,23 @@ class AsaasWebhookController extends Controller
 
         $this->pushBillingToTenant($tenant);
         $this->pushPaymentRecordToTenant($tenant, $payment);
+    }
+
+    private function onPaymentUpdated(array $data): void
+    {
+        $tenant = $this->findTenantBySubscription($data);
+        if (!$tenant) return;
+
+        $payment = Payment::where('asaas_payment_id', $data['id'])->first();
+        if (!$payment) return;
+
+        $payment->update([
+            'billing_type' => $data['billingType'] ?? $payment->billing_type,
+            'invoice_url' => $data['invoiceUrl'] ?? $payment->invoice_url,
+        ]);
+
+        $this->pushBillingToTenant($tenant);
+        $this->pushPaymentRecordToTenant($tenant, $payment->fresh());
     }
 
     private function onPaymentConfirmed(array $data, string $event): void
