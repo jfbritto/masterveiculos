@@ -138,7 +138,7 @@ class AuditPaymentOwnershipTest extends TestCase
 
         $output = $this->audit();
 
-        $this->assertStringContainsString(rawurlencode($weird), $this->asaasRequests()->first()->url());
+        $this->assertContains(self::ASAAS.rawurlencode($weird), $this->asaasRequests()->map(fn (Request $r) => $r->url()));
         $this->assertStringContainsString("DELETE FROM billing_history WHERE asaas_payment_id IN ('pay_plain');", $output);
         $this->assertStringNotContainsString('DROP TABLE billing_history; --\')', $output);
         $this->assertStringContainsString('revisar à mão', $output);
