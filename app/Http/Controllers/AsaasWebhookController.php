@@ -4,14 +4,19 @@ namespace App\Http\Controllers;
 
 use App\Models\Payment;
 use App\Models\Tenant;
+use App\Services\AsaasPaymentOwnership;
 use App\Services\TenantApiService;
+use App\Services\TenantBillingSync;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
 class AsaasWebhookController extends Controller
 {
     public function __construct(
-        private TenantApiService $apiService
+        private TenantApiService $apiService,
+        private TenantBillingSync $billingSync,
+        private AsaasPaymentOwnership $ownership,
     ) {}
 
     public function handle(Request $request)
@@ -19,18 +24,42 @@ class AsaasWebhookController extends Controller
         $event = $request->input('event');
         $payment = $request->input('payment');
 
-        if (!$event || !$payment) {
+        if (! $event || ! is_array($payment) || empty($payment['id'])) {
             return response()->json(['error' => 'Invalid payload'], 400);
         }
 
-        Log::info('Asaas webhook received', ['event' => $event, 'payment_id' => $payment['id'] ?? null]);
+        // A conta do Asaas é compartilhada com outras plataformas: a maioria
+        // dos eventos que chegam aqui NÃO é do master. Esses respondem 200 (o
+        // Asaas não deve reenviar) e não tocam em nada.
+        $match = $this->ownership->match($payment);
+        $tenant = $match['tenant'];
+
+        if (! $tenant) {
+            $context = [
+                'event' => $event,
+                'payment_id' => $payment['id'],
+                'externalReference' => $payment['externalReference'] ?? null,
+                'subscription' => $payment['subscription'] ?? null,
+                'reason' => $match['reason'],
+            ];
+
+            if ($match['conflict']) {
+                Log::warning('Asaas webhook: referência e assinatura de tenants diferentes; evento ignorado', $context);
+            } else {
+                Log::info('Asaas webhook: pagamento não é do master (outra plataforma da conta); ignorado', $context);
+            }
+
+            return response()->json(['status' => 'ignored']);
+        }
+
+        Log::info('Asaas webhook received', ['event' => $event, 'payment_id' => $payment['id'], 'tenant_id' => $tenant->id]);
 
         match ($event) {
-            'PAYMENT_CREATED' => $this->onPaymentCreated($payment),
-            'PAYMENT_UPDATED' => $this->onPaymentUpdated($payment),
-            'PAYMENT_CONFIRMED', 'PAYMENT_RECEIVED' => $this->onPaymentConfirmed($payment, $event),
-            'PAYMENT_OVERDUE' => $this->onPaymentOverdue($payment),
-            'PAYMENT_REFUNDED' => $this->onPaymentRefunded($payment),
+            'PAYMENT_CREATED' => $this->onPaymentCreated($tenant, $payment),
+            'PAYMENT_UPDATED' => $this->onPaymentUpdated($tenant, $payment),
+            'PAYMENT_CONFIRMED', 'PAYMENT_RECEIVED' => $this->onPaymentConfirmed($tenant, $payment, $event),
+            'PAYMENT_OVERDUE' => $this->onPaymentOverdue($tenant, $payment),
+            'PAYMENT_REFUNDED' => $this->onPaymentRefunded($tenant, $payment),
             'PAYMENT_DELETED', 'PAYMENT_RESTORED' => null, // ignorar
             default => Log::info("Asaas webhook event not handled: {$event}"),
         };
@@ -38,11 +67,8 @@ class AsaasWebhookController extends Controller
         return response()->json(['status' => 'ok']);
     }
 
-    private function onPaymentCreated(array $data): void
+    private function onPaymentCreated(Tenant $tenant, array $data): void
     {
-        $tenant = $this->findTenantBySubscription($data);
-        if (!$tenant) return;
-
         $payment = Payment::updateOrCreate(
             ['asaas_payment_id' => $data['id']],
             [
@@ -55,168 +81,78 @@ class AsaasWebhookController extends Controller
             ]
         );
 
-        $this->pushBillingToTenant($tenant);
-        $this->pushPaymentRecordToTenant($tenant, $payment);
+        $this->billingSync->pushSummary($tenant);
+        $this->billingSync->pushPaymentRecord($tenant, $payment);
     }
 
-    private function onPaymentUpdated(array $data): void
+    private function onPaymentUpdated(Tenant $tenant, array $data): void
     {
-        $tenant = $this->findTenantBySubscription($data);
-        if (!$tenant) return;
-
-        $payment = Payment::where('asaas_payment_id', $data['id'])->first();
-        if (!$payment) return;
+        $payment = $this->tenantPayment($tenant, $data)->first();
+        if (! $payment) {
+            return;
+        }
 
         $payment->update([
             'billing_type' => $data['billingType'] ?? $payment->billing_type,
             'invoice_url' => $data['invoiceUrl'] ?? $payment->invoice_url,
         ]);
 
-        $this->pushBillingToTenant($tenant);
-        $this->pushPaymentRecordToTenant($tenant, $payment->fresh());
+        $this->billingSync->pushSummary($tenant);
+        $this->billingSync->pushPaymentRecord($tenant, $payment->fresh());
     }
 
-    private function onPaymentConfirmed(array $data, string $event): void
+    private function onPaymentConfirmed(Tenant $tenant, array $data, string $event): void
     {
-        $tenant = $this->findTenantBySubscription($data);
-
         $status = $event === 'PAYMENT_CONFIRMED' ? 'confirmed' : 'received';
 
-        Payment::where('asaas_payment_id', $data['id'])->update([
+        $this->tenantPayment($tenant, $data)->update([
             'status' => $status,
             'paid_at' => $data['paymentDate'] ?? $data['confirmedDate'] ?? now()->toDateString(),
         ]);
 
-        if ($tenant) {
-            $this->pushBillingToTenant($tenant);
-            $payment = Payment::where('asaas_payment_id', $data['id'])->first();
-            if ($payment) {
-                $this->pushPaymentRecordToTenant($tenant, $payment);
-            }
+        $this->billingSync->pushSummary($tenant);
+        $payment = $this->tenantPayment($tenant, $data)->first();
+        if ($payment) {
+            $this->billingSync->pushPaymentRecord($tenant, $payment);
         }
 
         // Se o tenant estava suspenso por inadimplência, reativar
-        if ($tenant && $tenant->isSuspended()) {
+        if ($tenant->isSuspended()) {
             $this->apiService->reactivate($tenant);
             $tenant->update(['status' => 'active']);
             Log::info("Tenant {$tenant->name} reativado após pagamento.");
         }
     }
 
-    private function onPaymentOverdue(array $data): void
+    private function onPaymentOverdue(Tenant $tenant, array $data): void
     {
-        $tenant = $this->findTenantBySubscription($data);
-        if (!$tenant) return;
-
-        Payment::where('asaas_payment_id', $data['id'])->update([
+        $this->tenantPayment($tenant, $data)->update([
             'status' => 'overdue',
         ]);
 
-        $this->pushBillingToTenant($tenant);
-        $payment = Payment::where('asaas_payment_id', $data['id'])->first();
+        $this->billingSync->pushSummary($tenant);
+        $payment = $this->tenantPayment($tenant, $data)->first();
         if ($payment) {
-            $this->pushPaymentRecordToTenant($tenant, $payment);
+            $this->billingSync->pushPaymentRecord($tenant, $payment);
         }
     }
 
-    private function onPaymentRefunded(array $data): void
+    private function onPaymentRefunded(Tenant $tenant, array $data): void
     {
-        Payment::where('asaas_payment_id', $data['id'])->update([
+        $this->tenantPayment($tenant, $data)->update([
             'status' => 'refunded',
         ]);
 
-        $payment = Payment::where('asaas_payment_id', $data['id'])->first();
+        $payment = $this->tenantPayment($tenant, $data)->first();
         if ($payment) {
-            $tenant = Tenant::find($payment->tenant_id);
-            if ($tenant) {
-                $this->pushPaymentRecordToTenant($tenant, $payment);
-            }
+            $this->billingSync->pushPaymentRecord($tenant, $payment);
         }
     }
 
-    private function pushBillingToTenant(Tenant $tenant): void
+    /** A linha deste pagamento, só se for do tenant do evento. */
+    private function tenantPayment(Tenant $tenant, array $data): Builder
     {
-        try {
-            // Busca a fatura pendente mais próxima do tenant
-            $nextPayment = Payment::where('tenant_id', $tenant->id)
-                ->whereIn('status', ['pending', 'overdue'])
-                ->orderBy('due_date', 'asc')
-                ->first();
-
-            if ($nextPayment) {
-                $result = $this->apiService->updateBilling($tenant, [
-                    'billing_status' => $nextPayment->status,
-                    'billing_amount' => $nextPayment->amount,
-                    'billing_due_date' => $nextPayment->due_date,
-                    'billing_invoice_url' => $nextPayment->invoice_url,
-                    'billing_type' => $nextPayment->billing_type,
-                    'billing_subscription_status' => 'active',
-                ]);
-            } else {
-                // Todas as faturas pagas — busca a última paga para mostrar status
-                $lastPaid = Payment::where('tenant_id', $tenant->id)
-                    ->whereIn('status', ['confirmed', 'received'])
-                    ->orderBy('due_date', 'desc')
-                    ->first();
-
-                if ($lastPaid) {
-                    $result = $this->apiService->updateBilling($tenant, [
-                        'billing_status' => $lastPaid->status,
-                        'billing_amount' => $lastPaid->amount,
-                        'billing_due_date' => $lastPaid->due_date,
-                        'billing_invoice_url' => null,
-                        'billing_type' => $lastPaid->billing_type,
-                        'billing_subscription_status' => 'active',
-                    ]);
-                }
-            }
-
-            if (isset($result) && !$result['success']) {
-                Log::warning("Push billing to tenant {$tenant->name} failed", $result);
-            } elseif (isset($result)) {
-                Log::info("Push billing to tenant {$tenant->name} succeeded");
-            }
-        } catch (\Exception $e) {
-            Log::warning("Failed to push billing to tenant {$tenant->name}: {$e->getMessage()}");
-        }
-    }
-
-    private function pushPaymentRecordToTenant(Tenant $tenant, Payment $payment): void
-    {
-        try {
-            $result = $this->apiService->updateBillingHistory($tenant, [
-                'asaas_payment_id' => $payment->asaas_payment_id,
-                'amount' => $payment->amount,
-                'status' => $payment->status,
-                'due_date' => $payment->due_date instanceof \Carbon\Carbon ? $payment->due_date->toDateString() : $payment->due_date,
-                'paid_at' => $payment->paid_at ? ($payment->paid_at instanceof \Carbon\Carbon ? $payment->paid_at->toDateString() : $payment->paid_at) : null,
-                'billing_type' => $payment->billing_type,
-                'invoice_url' => $payment->invoice_url,
-            ]);
-
-            if (!$result['success']) {
-                Log::warning("Push payment record to tenant {$tenant->name} failed", $result);
-            }
-        } catch (\Exception $e) {
-            Log::warning("Failed to push payment record to tenant {$tenant->name}: {$e->getMessage()}");
-        }
-    }
-
-    private function findTenantBySubscription(array $data): ?Tenant
-    {
-        // Tenta pelo externalReference (tenant_ID)
-        if (!empty($data['externalReference'])) {
-            $id = str_replace('tenant_', '', $data['externalReference']);
-            $tenant = Tenant::find($id);
-            if ($tenant) return $tenant;
-        }
-
-        // Tenta pelo subscription ID
-        if (!empty($data['subscription'])) {
-            return Tenant::where('asaas_subscription_id', $data['subscription'])->first();
-        }
-
-        Log::warning('Asaas webhook: tenant not found', $data);
-        return null;
+        return Payment::where('tenant_id', $tenant->id)
+            ->where('asaas_payment_id', (string) $data['id']);
     }
 }
