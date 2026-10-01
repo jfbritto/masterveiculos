@@ -124,4 +124,44 @@ depois de uma sequência de falhas; se isso acontecer, corrija o token (passos
 
 ## Auditoria de pagamentos gravados
 
-Ver a seção seguinte, adicionada junto com o comando `payments:audit-ownership`.
+`payments:audit-ownership` lê cada `Payment` com `asaas_payment_id` no Asaas
+(`GET /v3/payments/{id}`, uma chamada a cada 500 ms) e dá um veredito:
+
+| Veredito | Quando |
+|---|---|
+| `nosso` | `externalReference` = `tenant_<id do tenant>`, ou a assinatura é a do tenant, ou o cliente é o do tenant |
+| `não é nosso` | nada disso: pagamento de outra plataforma da conta |
+| `incerto` | o Asaas não devolveu o pagamento (404, sandbox, erro), ou ele é de **outro** tenant do master. Nunca é apagado: revisar à mão |
+
+Rode depois do deploy do passo 4 (antes, o webhook antigo continua gravando
+pagamentos de fora):
+
+```bash
+cd /var/www/masterveiculos
+php8.4 artisan payments:audit-ownership             # dry-run: só lista
+php8.4 artisan payments:audit-ownership --tenant=2  # só um tenant
+php8.4 artisan payments:audit-ownership --force     # apaga os "não é nosso"
+```
+
+O dry-run imprime a tabela (tenant, pagamento, valor, vencimento, assinatura
+e referência no Asaas, veredito, motivo) e, para cada loja, o SQL de limpeza
+do histórico. Confira a tabela antes do `--force`.
+
+Com `--force`, para cada tenant afetado:
+
+1. apaga do master as linhas "não é nosso";
+2. reenvia à loja o resumo de cobrança (`/api/master/billing`), que podia estar
+   mostrando a fatura de fora; se não sobrou fatura, limpa o resumo.
+
+**O histórico da loja não é limpo pelo comando.** A loja (soavel) não tem
+endpoint para apagar `billing_history`. Rode o SQL que o comando imprimiu no
+banco de cada loja, por exemplo:
+
+```bash
+grep '^DB_DATABASE=' /var/www/soavelveiculos/.env
+mysql soavelveiculos -e "DELETE FROM billing_history WHERE asaas_payment_id IN ('pay_...');"
+```
+
+Ids fora do formato do Asaas (`[A-Za-z0-9_-]`) ficam fora do SQL e aparecem
+como "revisar à mão": antes da autenticação do webhook qualquer um podia gravar
+um id arbitrário.
