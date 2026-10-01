@@ -11,7 +11,7 @@ class TenantFactory extends Factory
     {
         return [
             'name' => fake()->company(),
-            'domain' => 'http://' . fake()->domainName(),
+            'domain' => 'http://' . fake()->unique()->domainName(),
             'api_token' => Str::random(64),
             'status' => 'active',
             'monthly_amount' => 100.00,

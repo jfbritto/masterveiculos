@@ -77,6 +77,13 @@ class AsaasService
         return $this->request('DELETE', "/subscriptions/{$subscriptionId}");
     }
 
+    /** GET /v3/payments/{id}. Null se não achar ou se a API falhar (o erro vai para o log). */
+    public function getPayment(string $paymentId): ?array
+    {
+        // O id vem do banco, gravado por eventos do webhook: nunca confiar nele como caminho.
+        return $this->request('GET', '/payments/'.rawurlencode($paymentId));
+    }
+
     private function request(string $method, string $endpoint, array $data = []): ?array
     {
         if (empty($this->apiKey)) {
