@@ -38,6 +38,9 @@ return [
     'asaas' => [
         'api_key' => env('ASAAS_API_KEY'),
         'sandbox' => env('ASAAS_SANDBOX', true),
+        // Token que o Asaas manda no header asaas-access-token do webhook.
+        // Sem ele o webhook recusa tudo (401). Ver docs/webhook-asaas.md.
+        'webhook_token' => env('ASAAS_WEBHOOK_TOKEN'),
     ],
 
 ];

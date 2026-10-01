@@ -31,6 +31,67 @@ class AsaasWebhookTest extends TestCase
     }
 
     // ------------------------------------------------------------------
+    // Autenticação (header asaas-access-token)
+    // ------------------------------------------------------------------
+
+    public static function badTokens(): array
+    {
+        return [
+            'sem header' => [null],
+            'vazio' => [''],
+            'errado' => ['token-errado'],
+            'prefixo do certo' => [substr(self::TOKEN, 0, 10)],
+            'certo com sufixo' => [self::TOKEN.'x'],
+        ];
+    }
+
+    #[DataProvider('badTokens')]
+    public function test_rejects_missing_or_wrong_token(?string $token): void
+    {
+        $tenant = $this->tenant(1, ['status' => 'suspended']);
+
+        $this->webhook('PAYMENT_CONFIRMED', [
+            'id' => 'pay_falso',
+            'paymentDate' => '2026-09-30',
+            'externalReference' => 'tenant_1',
+        ], $token)->assertUnauthorized();
+
+        $this->assertDatabaseHas('tenants', ['id' => $tenant->id, 'status' => 'suspended']);
+        Http::assertNothingSent();
+    }
+
+    public function test_token_is_checked_before_the_payload(): void
+    {
+        $this->postJson('/api/webhook/asaas', [])->assertUnauthorized();
+    }
+
+    public function test_refuses_everything_when_the_token_is_not_configured(): void
+    {
+        config(['services.asaas.webhook_token' => null]);
+        $this->tenant(1, ['status' => 'suspended']);
+        Log::spy();
+
+        foreach ([null, '', self::TOKEN] as $token) {
+            $this->webhook('PAYMENT_CONFIRMED', ['id' => 'pay_x', 'externalReference' => 'tenant_1'], $token)
+                ->assertUnauthorized();
+        }
+
+        $this->assertDatabaseHas('tenants', ['id' => 1, 'status' => 'suspended']);
+        Http::assertNothingSent();
+        Log::shouldHaveReceived('error')->withArgs(fn ($message) => str_contains($message, 'ASAAS_WEBHOOK_TOKEN'));
+    }
+
+    public function test_accepts_the_configured_token(): void
+    {
+        $tenant = $this->tenant(1);
+        $this->payment($tenant, 'pay_ok');
+
+        $this->webhook('PAYMENT_CONFIRMED', ['id' => 'pay_ok', 'externalReference' => 'tenant_1'])->assertOk();
+
+        $this->assertDatabaseHas('payments', ['asaas_payment_id' => 'pay_ok', 'status' => 'confirmed']);
+    }
+
+    // ------------------------------------------------------------------
     // Eventos do próprio master (comportamento preservado)
     // ------------------------------------------------------------------
 
