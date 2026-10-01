@@ -31,7 +31,6 @@
             @if (Route::has('password.request'))
                 <a href="{{ route('password.request') }}" class="small">Esqueceu a senha?</a>
             @endif
-            <a href="{{ route('register') }}" class="small">Criar conta</a>
         </div>
     </form>
 </x-guest-layout>
