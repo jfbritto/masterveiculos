@@ -37,9 +37,19 @@ middleware `VerifyAsaasWebhookToken` compara com `ASAAS_WEBHOOK_TOKEN`
 |---|---|
 | header ausente ou diferente | 401, log `warning` |
 | `ASAAS_WEBHOOK_TOKEN` vazio no servidor | 401 para **tudo**, log `error` |
-| token certo | segue para o controller |
+| token certo, corpo que nem JSON é | 400, log `warning` |
+| token certo, JSON que não é um pagamento (evento de assinatura, transferência, `{}`...) | 200 `ignored`, log `info` |
+| token certo, pagamento de outra plataforma | 200 `ignored`, log `info` |
+| token certo, pagamento de um tenant | processa, 200 |
 
 Fecha por padrão: esquecer o `.env` derruba o webhook em vez de abri-lo.
+
+**Depois do token, nunca 4xx para o que o master não trata.** O Asaas conta
+qualquer resposta fora de 2xx como falha e, depois de uma sequência delas,
+interrompe a fila inteira do webhook, inclusive os eventos do master. Por isso
+todo JSON bem formado que não é um pagamento tratado recebe 200. O 400 fica só
+para corpo que nem JSON é: o Asaas sempre manda JSON, então isso só vem de
+alguém testando à mão com o token, e aí o erro explícito ajuda mais.
 
 ## Implantação sem queda
 
@@ -104,10 +114,10 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST https://veiculos.helpflux.com.b
 # esperado: 401 (sem token)
 
 read -rs TOKEN
-curl -s -o /dev/null -w '%{http_code}\n' -X POST https://veiculos.helpflux.com.br/api/webhook/asaas \
+curl -s -w '\n%{http_code}\n' -X POST https://veiculos.helpflux.com.br/api/webhook/asaas \
   -H 'Content-Type: application/json' -H "asaas-access-token: $TOKEN" -d '{}'
 unset TOKEN
-# esperado: 400 (passou na autenticação; payload vazio, nada processado)
+# esperado: {"status":"ignored"} e 200 (passou na autenticação; nada processado)
 
 tail -f storage/logs/laravel.log | grep -i asaas
 ```

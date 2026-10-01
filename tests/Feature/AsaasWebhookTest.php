@@ -92,13 +92,97 @@ class AsaasWebhookTest extends TestCase
     }
 
     // ------------------------------------------------------------------
-    // Eventos do próprio master (comportamento preservado)
+    // Corpo que o master não trata: nunca 4xx/5xx depois do token
+    // (o Asaas conta como falha e pode interromper a fila do webhook)
     // ------------------------------------------------------------------
 
-    public function test_rejects_invalid_payload(): void
+    public static function unhandledJsonBodies(): array
     {
-        $this->postJson('/api/webhook/asaas', [], $this->headers())->assertStatus(400);
+        return [
+            'evento de assinatura' => ['{"event":"SUBSCRIPTION_CREATED","subscription":{"id":"sub_loja_1","externalReference":"tenant_1"}}'],
+            'evento de transferência' => ['{"event":"TRANSFER_DONE","transfer":{"id":"tra_1","value":10}}'],
+            'objeto vazio' => ['{}'],
+            'array vazio' => ['[]'],
+            'texto JSON' => ['"PAYMENT_CONFIRMED"'],
+            'número JSON' => ['123'],
+            'null JSON' => ['null'],
+            'sem event' => ['{"payment":{"id":"pay_1","externalReference":"tenant_1"}}'],
+            'event vazio' => ['{"event":"","payment":{"id":"pay_1","externalReference":"tenant_1"}}'],
+            'event não é texto' => ['{"event":["PAYMENT_CONFIRMED"],"payment":{"id":"pay_1","externalReference":"tenant_1"}}'],
+            'payment não é objeto' => ['{"event":"PAYMENT_CONFIRMED","payment":"pay_1"}'],
+            'payment sem id' => ['{"event":"PAYMENT_CONFIRMED","payment":{"externalReference":"tenant_1","value":5}}'],
+        ];
     }
+
+    #[DataProvider('unhandledJsonBodies')]
+    public function test_well_formed_json_that_is_not_a_handled_payment_gets_200(string $body): void
+    {
+        $tenant = $this->tenant(1, ['status' => 'suspended']);
+        Log::spy();
+
+        $this->raw($body)->assertOk();
+
+        $this->assertDatabaseCount('payments', 0);
+        $this->assertDatabaseHas('tenants', ['id' => $tenant->id, 'status' => 'suspended']);
+        Http::assertNothingSent();
+        Log::shouldHaveReceived('info')->withArgs(fn ($message) => str_contains($message, 'ignorado'));
+        Log::shouldNotHaveReceived('warning');
+        Log::shouldNotHaveReceived('error');
+    }
+
+    public function test_unhandled_payment_event_of_our_tenant_gets_200(): void
+    {
+        $tenant = $this->tenant(1);
+        $this->payment($tenant, 'pay_risk');
+
+        $this->webhook('PAYMENT_AWAITING_RISK_ANALYSIS', ['id' => 'pay_risk', 'externalReference' => 'tenant_1'])->assertOk();
+
+        $this->assertDatabaseHas('payments', ['asaas_payment_id' => 'pay_risk', 'status' => 'pending']);
+        Http::assertNothingSent();
+    }
+
+    public static function notJsonBodies(): array
+    {
+        return [
+            'vazio' => [''],
+            'formulário' => ['event=PAYMENT_CONFIRMED&payment[id]=pay_1'],
+            'JSON truncado' => ['{"event":"PAYMENT_CONFIRMED","payment":{"id":'],
+            'texto solto' => ['ok'],
+        ];
+    }
+
+    #[DataProvider('notJsonBodies')]
+    public function test_body_that_is_not_json_gets_400(string $body): void
+    {
+        $this->tenant(1, ['status' => 'suspended']);
+
+        $this->raw($body)->assertStatus(400);
+
+        $this->assertDatabaseCount('payments', 0);
+        $this->assertDatabaseHas('tenants', ['id' => 1, 'status' => 'suspended']);
+        Http::assertNothingSent();
+    }
+
+    public function test_body_that_is_not_json_without_token_still_gets_401(): void
+    {
+        $this->raw('ok', token: null)->assertUnauthorized();
+    }
+
+    public function test_json_sent_with_another_content_type_is_still_processed(): void
+    {
+        $tenant = $this->tenant(1);
+
+        $this->raw(json_encode([
+            'event' => 'PAYMENT_CREATED',
+            'payment' => ['id' => 'pay_txt', 'value' => 100, 'dueDate' => '2026-05-01', 'externalReference' => 'tenant_1'],
+        ]), contentType: 'text/plain')->assertOk();
+
+        $this->assertDatabaseHas('payments', ['tenant_id' => $tenant->id, 'asaas_payment_id' => 'pay_txt']);
+    }
+
+    // ------------------------------------------------------------------
+    // Eventos do próprio master (comportamento preservado)
+    // ------------------------------------------------------------------
 
     public function test_payment_created_stores_payment_and_pushes_to_the_store(): void
     {
@@ -446,6 +530,17 @@ class AsaasWebhookTest extends TestCase
     private function webhook(string $event, array $payment, ?string $token = self::TOKEN): TestResponse
     {
         return $this->postJson('/api/webhook/asaas', ['event' => $event, 'payment' => $payment], $this->headers($token));
+    }
+
+    /** POST com o corpo cru, sem passar pelo json_encode do postJson. */
+    private function raw(string $body, ?string $token = self::TOKEN, string $contentType = 'application/json'): TestResponse
+    {
+        $server = ['CONTENT_TYPE' => $contentType, 'HTTP_ACCEPT' => 'application/json'];
+        if ($token !== null) {
+            $server['HTTP_ASAAS_ACCESS_TOKEN'] = $token;
+        }
+
+        return $this->call('POST', '/api/webhook/asaas', [], [], [], $server, $body);
     }
 
     /** Requisições que o master mandou para um endpoint da loja. */

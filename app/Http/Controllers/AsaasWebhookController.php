@@ -21,11 +21,30 @@ class AsaasWebhookController extends Controller
 
     public function handle(Request $request)
     {
-        $event = $request->input('event');
-        $payment = $request->input('payment');
+        // O token já foi conferido (VerifyAsaasWebhookToken). Daqui em diante,
+        // nada de 4xx para um evento que o master não trata: o Asaas conta como
+        // falha e, depois de várias, interrompe a fila inteira do webhook.
+        //
+        // A única exceção é um corpo que nem JSON é. O Asaas sempre manda JSON,
+        // então isso só vem de um cliente manual ou quebrado com o token, e aí
+        // um erro explícito ajuda mais que um 200 silencioso.
+        json_decode($request->getContent());
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            Log::warning('Asaas webhook: corpo não é JSON; recusado.', ['bytes' => strlen($request->getContent())]);
 
-        if (! $event || ! is_array($payment) || empty($payment['id'])) {
-            return response()->json(['error' => 'Invalid payload'], 400);
+            return response()->json(['error' => 'Invalid JSON'], 400);
+        }
+
+        // json() lê o corpo mesmo se o Content-Type não for application/json.
+        $event = $request->json('event');
+        $payment = $request->json('payment');
+
+        if (! is_string($event) || $event === '' || ! is_array($payment) || empty($payment['id'])) {
+            Log::info('Asaas webhook: evento sem pagamento (outro tipo de evento); ignorado', [
+                'event' => is_string($event) ? $event : null,
+            ]);
+
+            return response()->json(['status' => 'ignored']);
         }
 
         // A conta do Asaas é compartilhada com outras plataformas: a maioria
